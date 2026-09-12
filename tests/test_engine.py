@@ -51,6 +51,13 @@ class TestEngine(unittest.TestCase):
             self.assertTrue(req_id.startswith("event_"))
             self.assertGreater(amt, Decimal("0"))
 
+    def test_multimodal_evidence_extraction(self):
+        from evidence import extract_amount_from_ocr, VERIFIED_IMAGE_AMOUNTS
+        self.assertEqual(len(VERIFIED_IMAGE_AMOUNTS), 16)
+        sample_text = "Net Pay IDR 4,365,000\nTotal Earnings: IDR 4,780,800"
+        extracted = extract_amount_from_ocr(sample_text)
+        self.assertEqual(extracted, Decimal("4365000"))
+
 
 if __name__ == "__main__":
     unittest.main()
