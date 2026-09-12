@@ -4,6 +4,7 @@ import argparse
 import calendar
 import csv
 import itertools
+import json
 import re
 import time
 from collections import Counter, defaultdict
@@ -356,6 +357,42 @@ def safe_amount(balance: Decimal, flows: dict[date, Decimal], start: date, reque
     return max(ZERO, Decimal(hi) * CENT)
 
 
+def cash_flow_trace(
+    request: dict,
+    profile: dict,
+    all_events: list[dict],
+    rates: dict,
+    messages: list[dict] | None = None,
+    image_amounts: dict[str, Decimal] | None = None,
+) -> list[dict[str, str]]:
+    """Return the 90-day ledger used for an auditable decision."""
+    start = parse_date(request["request_date"])
+    events = normalize_events(all_events, profile["home_currency"], rates, image_amounts or BLANK_AMOUNTS)
+    balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
+    known_by_date = defaultdict(list)
+    for event in relevant:
+        known_by_date[event["cash_date"]].append(event["event_id"])
+    projected_by_date = defaultdict(list)
+    for when, amount, event_id in projected_items:
+        projected_by_date[when].append(event_id)
+    running = balance
+    trace = []
+    for offset in range(HORIZON + 1):
+        when = start + timedelta(days=offset)
+        net = flows[when]
+        running += net
+        trace.append({
+            "date": when.isoformat(),
+            "opening_balance": money(running - net),
+            "known_event_ids": "|".join(sorted(known_by_date[when])),
+            "projected_event_ids": "|".join(sorted(projected_by_date[when])),
+            "net_flow": money(net),
+            "closing_balance": money(running),
+            "minimum_balance": money(dec(profile["minimum_balance_to_keep"])),
+        })
+    return trace
+
+
 def payment_string(payments: list[tuple[date, Decimal]]) -> str:
     return "|".join(f"{d.isoformat()}:{money(a)}" for d, a in sorted(payments)) if payments else "none"
 
@@ -462,7 +499,7 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
         if simulate(balance, flows, start, payments, minimum, end_date=plan_end):
             # Calculate average daily balance buffer across payment days
             avg_p_cost = total_payable / Decimal(n)
-            candidates.append((finishes_deadline, 0, avg_p_cost, first_d, n, opt_id, "installments", payments, "none"))
+            candidates.append((finishes_deadline, 0, total_payable, first_d, n, opt_id, "installments", payments, "none"))
 
     # 3. Partial payment
     if "partial_payment" in methods and request.get("allows_partial_payment", "").lower() == "true":
@@ -586,9 +623,26 @@ def parse_args():
     p = argparse.ArgumentParser(description="Deterministic Buy or Wait? financial decision agent")
     p.add_argument("--dataset-dir", type=Path, default=Path("dataset"))
     p.add_argument("--output", type=Path, default=Path("output.csv"))
+    p.add_argument("--trace-output", type=Path, default=None, help="Write per-request 90-day cash-flow traces as JSONL")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
     run(args.dataset_dir, args.output)
+    if args.trace_output:
+        data = load_dataset(args.dataset_dir)
+        rates = data["rates_by_date_pair"]
+        image_amounts = resolve_image_amounts(data["images"], args.dataset_dir / "media" / "images")
+        with args.trace_output.open("w", encoding="utf-8") as handle:
+            for request in data["requests"]:
+                trace = cash_flow_trace(
+                    request,
+                    data["profiles_by_user"][request["user_id"]],
+                    data["events_by_user"].get(request["user_id"], []),
+                    rates,
+                    data.get("messages_by_user", {}).get(request["user_id"], []),
+                    image_amounts,
+                )
+                handle.write(json.dumps({"request_id": request["request_id"], "trace": trace}) + "\n")
+        print(f"Wrote cash-flow traces to {args.trace_output}")

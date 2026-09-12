@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import sys
 import argparse
+import json
 from pathlib import Path
 
 # Add code directory to path
@@ -10,10 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "code"))
 
 from data_loader import load_dataset
-from main import decide
+from main import cash_flow_trace, decide
 import main
 
-def evaluate_samples(dataset_dir: Path):
+def evaluate_samples(dataset_dir: Path, trace_output: Path | None = None):
     data = load_dataset(dataset_dir)
     
     samples_path = dataset_dir / "sample_requests.csv"
@@ -39,6 +40,7 @@ def evaluate_samples(dataset_dir: Path):
     ]
     matches = {k: 0 for k in fields}
     mismatches = []
+    mismatch_traces = []
     exact_matches = 0
 
     for s in samples:
@@ -70,6 +72,20 @@ def evaluate_samples(dataset_dir: Path):
             exact_matches += 1
         else:
             mismatches.append((req_id, diffs))
+            if trace_output:
+                mismatch_traces.append({
+                    "request_id": req_id,
+                    "expected": {k: s[k] for k in fields},
+                    "predicted": {k: pred[k] for k in fields},
+                    "trace": cash_flow_trace(
+                        s,
+                        profiles.get(u_id, {}),
+                        events_by_user.get(u_id, []),
+                        rates,
+                        messages.get(u_id, []),
+                        image_amounts,
+                    ),
+                })
 
     print(f"Exact match on ALL 6 key fields: {exact_matches}/{len(samples)}")
     for k in fields:
@@ -82,8 +98,15 @@ def evaluate_samples(dataset_dir: Path):
             print(f"  {k}:")
             print(f"    Ground Truth: {gt}")
             print(f"    Predicted:    {pr}")
+    if trace_output:
+        with trace_output.open("w", encoding="utf-8") as handle:
+            for row in mismatch_traces:
+                handle.write(json.dumps(row) + "\n")
+        print(f"Wrote {len(mismatch_traces)} mismatch traces to {trace_output}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-dir", type=Path, default=ROOT / "dataset")
-    evaluate_samples(parser.parse_args().dataset_dir)
+    parser.add_argument("--trace-output", type=Path, default=None)
+    args = parser.parse_args()
+    evaluate_samples(args.dataset_dir, args.trace_output)
