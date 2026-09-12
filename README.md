@@ -25,13 +25,13 @@ python3 code/main.py --dataset-dir ../hackerrank-orchestrate-september26/dataset
 python3 code/evaluate.py --dataset-dir ../hackerrank-orchestrate-september26/dataset --output output.csv
 ```
 
-The current scaffold writes conservative baseline rows and is designed to be replaced or extended during implementation. The complete plan is in [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
+The current implementation is a deterministic batch engine. It normalizes event lifecycles, converts supported currencies, forecasts dated cash flows over 90 days, searches for the maximum safe immediate amount, evaluates supplied installment options and partial payment, and validates the output contract. The complete architecture and limitations are documented in [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
-| `code/main.py` | Production entry point |
+| `code/main.py` | Production entry point, forecast simulator, and plan selector |
 | `code/data_loader.py` | CSV loading and indexes |
 | `code/forecasting.py` | Forecasting and safe-payment calculations |
 | `code/planner.py` | Payment-plan candidate generation and ranking |
@@ -43,7 +43,7 @@ The current scaffold writes conservative baseline rows and is designed to be rep
 | `docs/DATASET_REFERENCE.md` | Dataset schemas and interpretation rules |
 | `docs/AI_JUDGE_PREP.md` | Interview preparation |
 | `data/README.md` | How to place the local dataset without committing it |
-| `tests/` | Deterministic tests to add while implementing |
+| `tests/` | Deterministic unit tests for simulation and output primitives |
 
 ## Required output
 

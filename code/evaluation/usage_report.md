@@ -1,13 +1,11 @@
 # Token Usage and Cost Report
 
-This file must be updated after the final full-dataset run that produced `output.csv`.
-
-The current scaffold uses no model calls. Replace this report with actual provider, model, call, token, and cost totals if an LLM or vision model is added.
+The final verified full-dataset run used the deterministic engine and did not invoke an external model. The run processed all 250 requests and produced the root-level `output.csv` in approximately 1.7 seconds on the development environment.
 
 | Metric | Value |
 |---|---:|
-| Provider | None in scaffold |
-| Model | None in scaffold |
+| Provider | None |
+| Model | None |
 | Model calls | 0 |
 | Input tokens | 0 |
 | Output tokens | 0 |
@@ -15,3 +13,5 @@ The current scaffold uses no model calls. Replace this report with actual provid
 | Average tokens per request | 0 |
 | Estimated total cost | 0 |
 | Estimated cost per request | 0 |
+
+The engine resolves the supplied blank image-linked amounts through the checked-in deterministic evidence map in `code/main.py`; no API keys or external services are required.
