@@ -80,6 +80,25 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(normalized[0]["event_id"], "event_settled")
         self.assertEqual(normalized[0]["cash_date"], date(2026, 1, 3))
 
+    def test_transitive_linked_events_choose_one_authoritative_record(self):
+        rows = [
+            {
+                "event_id": "event_root", "linked_event_id": "", "status": "pending", "direction": "debit", "amount": "100",
+                "currency": "USD", "event_date": "2026-01-01", "settlement_date": "",
+            },
+            {
+                "event_id": "event_amended", "linked_event_id": "event_root", "status": "scheduled", "direction": "debit", "amount": "110",
+                "currency": "USD", "event_date": "2026-01-02", "settlement_date": "2026-01-04",
+            },
+            {
+                "event_id": "event_settled", "linked_event_id": "event_amended", "status": "settled", "direction": "debit", "amount": "120",
+                "currency": "USD", "event_date": "2026-01-03", "settlement_date": "2026-01-05",
+            },
+        ]
+        normalized = normalize_events(rows, "USD", {}, {})
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["event_id"], "event_settled")
+
     def test_blank_amount_without_evidence_fails_explicitly(self):
         rows = [{
             "event_id": "event_unknown", "linked_event_id": "", "status": "settled",

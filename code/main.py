@@ -105,9 +105,28 @@ def _event_precedence(event: dict) -> tuple[int, int, int, str]:
 
 
 def normalize_events(rows: list[dict], home: str, rates: dict, image_amounts: dict[str, Decimal]) -> list[dict]:
+    parent = {event["event_id"]: event["event_id"] for event in rows}
+
+    def find(event_id: str) -> str:
+        while parent[event_id] != event_id:
+            parent[event_id] = parent[parent[event_id]]
+            event_id = parent[event_id]
+        return event_id
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for event in rows:
+        linked = event.get("linked_event_id")
+        if linked:
+            parent.setdefault(linked, linked)
+            union(event["event_id"], linked)
+
     grouped: dict[str, list[dict]] = defaultdict(list)
     for event in rows:
-        key = event.get("linked_event_id") or event["event_id"]
+        key = find(event["event_id"])
         grouped[key].append(event)
 
     result = []
@@ -261,12 +280,8 @@ def build_flows(request: dict, profile: dict, events: list[dict], rates: dict, m
         if items[-1]["cash_date"] < start - timedelta(days=max_inactivity):
             continue
 
-        # Recurring variable expenses are noisy; use the arithmetic mean across
-        # the observed cadence rather than one middle transaction. This avoids
-        # systematically underestimating recurring obligations when the recent
-        # sample contains unusually small purchases.
-        amts = [x["home_amount"] for x in items]
-        amt = sum(amts, ZERO) / Decimal(len(amts))
+        amts = sorted(x["home_amount"] for x in items)
+        amt = amts[len(amts) // 2]
         source_event_id = items[-1]["event_id"]
 
         curr_d = items[-1]["cash_date"]
