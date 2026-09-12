@@ -1,0 +1,215 @@
+..........
+----------------------------------------------------------------------
+Ran 10 tests in 0.002s
+
+OK
+Total sample requests: 25
+Exact match on ALL 6 key fields: 3/25
+  amount_safe_to_pay: 3/25 (12.0%)
+  affordability_status: 23/25 (92.0%)
+  recommended_payment_method: 23/25 (92.0%)
+  payment_plan: 23/25 (92.0%)
+  earliest_date_for_full_payment: 22/25 (88.0%)
+  spending_changes_needed: 23/25 (92.0%)
+
+Mismatched requests count: 22
+
+Request request_02:
+  amount_safe_to_pay:
+    Ground Truth: 17229139.2
+    Predicted:    18197523.69
+
+Request request_03:
+  amount_safe_to_pay:
+    Ground Truth: 873000
+    Predicted:    1114929.32
+
+Request request_04:
+  amount_safe_to_pay:
+    Ground Truth: 8401800
+    Predicted:    10475682.32
+
+Request request_05:
+  amount_safe_to_pay:
+    Ground Truth: 737
+    Predicted:    0
+
+Request request_06:
+  amount_safe_to_pay:
+    Ground Truth: 603.3
+    Predicted:    601.73
+
+Request request_07:
+  amount_safe_to_pay:
+    Ground Truth: 87170.56
+    Predicted:    94960.66
+  earliest_date_for_full_payment:
+    Ground Truth: 2024-10-23
+    Predicted:    2024-10-15
+
+Request request_08:
+  amount_safe_to_pay:
+    Ground Truth: 284.57
+    Predicted:    290.48
+
+Request request_10:
+  amount_safe_to_pay:
+    Ground Truth: 12700
+    Predicted:    68502.11
+
+Request request_11:
+  amount_safe_to_pay:
+    Ground Truth: 12510645
+    Predicted:    12116136.58
+  affordability_status:
+    Ground Truth: affordable_with_plan
+    Predicted:    affordable_later
+  recommended_payment_method:
+    Ground Truth: full_payment
+    Predicted:    wait
+  payment_plan:
+    Ground Truth: 2025-05-03:13110000
+    Predicted:    2025-05-15:13110000
+  earliest_date_for_full_payment:
+    Ground Truth: 2025-07-15
+    Predicted:    2025-05-15
+  spending_changes_needed:
+    Ground Truth: reduce_to:event_989:665950
+    Predicted:    none
+
+Request request_12:
+  amount_safe_to_pay:
+    Ground Truth: 65164
+    Predicted:    58304.08
+
+Request request_13:
+  amount_safe_to_pay:
+    Ground Truth: 433.4
+    Predicted:    583.57
+
+Request request_14:
+  amount_safe_to_pay:
+    Ground Truth: 597.74
+    Predicted:    626.07
+
+Request request_15:
+  amount_safe_to_pay:
+    Ground Truth: 83.05
+    Predicted:    6.54
+
+Request request_17:
+  amount_safe_to_pay:
+    Ground Truth: 243849.58
+    Predicted:    243641.63
+
+Request request_18:
+  amount_safe_to_pay:
+    Ground Truth: 462
+    Predicted:    549.72
+
+Request request_19:
+  amount_safe_to_pay:
+    Ground Truth: 28820
+    Predicted:    30153.59
+  recommended_payment_method:
+    Ground Truth: partial_payment
+    Predicted:    installments
+  payment_plan:
+    Ground Truth: 2024-09-04:28820|2024-09-15:10840
+    Predicted:    2024-09-04:20623.20|2024-10-02:20623.20
+
+Request request_20:
+  amount_safe_to_pay:
+    Ground Truth: 5400
+    Predicted:    8734.10
+
+Request request_21:
+  amount_safe_to_pay:
+    Ground Truth: 1543.35
+    Predicted:    1574.40
+  affordability_status:
+    Ground Truth: affordable_with_plan
+    Predicted:    affordable_now
+  earliest_date_for_full_payment:
+    Ground Truth: 2026-04-15
+    Predicted:    2026-04-03
+  spending_changes_needed:
+    Ground Truth: stop:event_1815|reduce_to:event_1816:23.50
+    Predicted:    none
+
+Request request_22:
+  amount_safe_to_pay:
+    Ground Truth: 475.46
+    Predicted:    480.70
+
+Request request_23:
+  amount_safe_to_pay:
+    Ground Truth: 9152
+    Predicted:    8406.78
+
+Request request_24:
+  amount_safe_to_pay:
+    Ground Truth: 13420
+    Predicted:    17959.28
+
+Request request_25:
+  amount_safe_to_pay:
+    Ground Truth: 1425000
+    Predicted:    2781919.81
+Traceback (most recent call last):
+  File "/home/ubuntu/Hackerrank/code/evaluate.py", line 29, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/ubuntu/Hackerrank/code/evaluate.py", line 17, in main
+    run(args.dataset_dir, args.output)
+  File "/home/ubuntu/Hackerrank/code/main.py", line 513, in run
+    decide(
+  File "/home/ubuntu/Hackerrank/code/main.py", line 369, in decide
+    balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Hackerrank/code/main.py", line 151, in build_flows
+    sal_msg_override, is_terminated = message_salary_info(messages or [], profile["home_currency"], rates, start)
+                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Hackerrank/code/main.py", line 123, in message_salary_info
+    val = convert(Decimal(raw.replace(",", "")), currency.upper(), home, request_date, rates)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/Hackerrank/code/main.py", line 56, in convert
+    raise ValueError(
+ValueError: Missing exchange rate for USD->IDR on 2025-05-03
+Creating submission package: /home/ubuntu/Hackerrank/code.zip
+Successfully packaged 11 files into code.zip (21.4 KB)
+Starting HackerRank Orchestrate Quality Gate in /home/ubuntu/Hackerrank
+Dataset directory: /home/ubuntu/hackerrank-orchestrate-september26/dataset
+
+======================================================================
+[STEP] 1. Running Automated Unit Tests
+======================================================================
+
+======================================================================
+[STEP] 2. Running Ground-Truth Benchmark on Public Samples
+======================================================================
+
+======================================================================
+[STEP] 3. Evaluating and Validating Output on Full Dataset (250 Requests)
+======================================================================
+
+======================================================================
+[STEP] 4. Building Submission Package (code.zip)
+======================================================================
+Archive verified: 11 files cleanly packaged (21.4 KB).
+
+======================================================================
+[STEP] 5. Verifying Audit Log Compliance (AGENTS.md)
+======================================================================
+Audit log verified: properly formatted and AGENTS.md compliant.
+
+======================================================================
+FINAL QUALITY GATE SUMMARY
+======================================================================
+  * Unit Tests               : PASSED [OK]
+  * Benchmark Evaluation     : PASSED [OK]
+  * Dataset & Validator      : FAILED [X]
+  * Packaging & Archive      : PASSED [OK]
+  * Log Verification         : PASSED [OK]
+======================================================================
+SOME CHECKS FAILED - Please review the logs above.

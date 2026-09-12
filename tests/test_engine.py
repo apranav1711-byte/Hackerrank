@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "code"))
-from main import money, payment_string, safe_amount, simulate
+from main import money, payment_string, safe_amount, simulate, convert, normalize_events, message_salary_info
 
 
 class TestEngine(unittest.TestCase):
@@ -57,6 +57,48 @@ class TestEngine(unittest.TestCase):
         sample_text = "Net Pay IDR 4,365,000\nTotal Earnings: IDR 4,780,800"
         extracted = extract_amount_from_ocr(sample_text)
         self.assertEqual(extracted, Decimal("4365000"))
+
+    def test_missing_exchange_rate_fails_explicitly(self):
+        with self.assertRaisesRegex(ValueError, "Missing exchange rate"):
+            convert(Decimal("10"), "USD", "EUR", date(2026, 1, 1), {})
+
+    def test_linked_events_choose_settled_record_over_pending_record(self):
+        rows = [
+            {
+                "event_id": "event_pending", "linked_event_id": "event_root",
+                "status": "pending", "direction": "debit", "amount": "100",
+                "currency": "USD", "event_date": "2026-01-01", "settlement_date": "",
+            },
+            {
+                "event_id": "event_settled", "linked_event_id": "event_root",
+                "status": "settled", "direction": "debit", "amount": "120",
+                "currency": "USD", "event_date": "2026-01-02", "settlement_date": "2026-01-03",
+            },
+        ]
+        normalized = normalize_events(rows, "USD", {}, {})
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["event_id"], "event_settled")
+        self.assertEqual(normalized[0]["cash_date"], date(2026, 1, 3))
+
+    def test_blank_amount_without_evidence_fails_explicitly(self):
+        rows = [{
+            "event_id": "event_unknown", "linked_event_id": "", "status": "settled",
+            "direction": "debit", "amount": "", "currency": "USD",
+            "event_date": "2026-01-01", "settlement_date": "",
+        }]
+        with self.assertRaisesRegex(ValueError, "Blank amount has no image evidence"):
+            normalize_events(rows, "USD", {}, {})
+
+    def test_salary_message_uses_stated_settlement_date_for_conversion(self):
+        messages = [{
+            "sent_at": "2025-04-23T09:30:00Z",
+            "source_type": "employer",
+            "message_text": "Confirmed salary is USD 696 for 15 May 2025.",
+        }]
+        rates = {("2025-05-15", "USD", "IDR"): {"rate": "15833.33"}}
+        salary, terminated = message_salary_info(messages, "IDR", rates, date(2025, 5, 3))
+        self.assertEqual(salary, Decimal("11019997.68"))
+        self.assertFalse(terminated)
 
 
 if __name__ == "__main__":

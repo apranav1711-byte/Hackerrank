@@ -9,8 +9,6 @@ from __future__ import annotations
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from PIL import Image
-
 try:
     import pytesseract
     # Configure default Windows Tesseract path if present
@@ -47,6 +45,7 @@ def extract_text_from_image(image_path: Path) -> str:
     if not HAS_PYTESSERACT or not image_path.exists():
         return ""
     try:
+        from PIL import Image
         img = Image.open(image_path)
         return pytesseract.image_to_string(img)
     except Exception:

@@ -5,6 +5,7 @@ import calendar
 import csv
 import itertools
 import re
+import time
 from collections import Counter, defaultdict
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -38,6 +39,22 @@ def parse_date(value: str) -> date:
     return date.fromisoformat(value[:10])
 
 
+def message_date(text: str, fallback: date) -> date:
+    patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b",
+    ]
+    matches = [m for pattern in patterns for m in re.finditer(pattern, text, flags=re.I)]
+    if matches:
+        token = max(matches, key=lambda m: m.start()).group()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", token):
+            return parse_date(token)
+        day, month_name, year = token.split()
+        month = time.strptime(month_name, "%B").tm_mon
+        return date(int(year), month, int(day))
+    return fallback
+
+
 def add_months(d: date, months: int) -> date:
     month = d.month - 1 + months
     year, month = d.year + month // 12, month % 12 + 1
@@ -53,13 +70,17 @@ def convert(amount: Decimal, currency: str, home: str, when: date, rates: dict) 
     inverse = rates.get((when.isoformat(), home, currency))
     if inverse and dec(inverse["rate"]):
         return amount / dec(inverse["rate"])
-    return amount
+    raise ValueError(
+        f"Missing exchange rate for {currency}->{home} on {when.isoformat()}"
+    )
 
 
-def event_amount(event: dict, home: str, rates: dict) -> Decimal:
+def event_amount(event: dict, home: str, rates: dict, image_amounts: dict[str, Decimal]) -> Decimal:
     amount = dec(event.get("amount"))
     if not event.get("amount"):
-        amount = BLANK_AMOUNTS.get(event["event_id"], ZERO)
+        amount = image_amounts.get(event["event_id"], ZERO)
+        if amount == ZERO:
+            raise ValueError(f"Blank amount has no image evidence: {event['event_id']}")
     return convert(
         amount,
         event.get("currency", home),
@@ -69,18 +90,33 @@ def event_amount(event: dict, home: str, rates: dict) -> Decimal:
     )
 
 
-def normalize_events(rows: list[dict], home: str, rates: dict) -> list[dict]:
-    seen = set()
+def _event_precedence(event: dict) -> tuple[int, int, int, str]:
+    """Rank competing lifecycle rows from safest/most authoritative to weakest."""
+    status_rank = {"settled": 4, "scheduled": 3, "pending": 2, "estimated": 1}
+    explicit_rank = 1 if event.get("status") in {"cancelled", "failed"} else 0
+    description = event.get("description", "").lower()
+    amendment_rank = 1 if any(x in description for x in ("amended", "updated", "corrected")) else 0
+    return (
+        explicit_rank,
+        amendment_rank,
+        status_rank.get(event.get("status", ""), 0),
+        event.get("event_date", ""),
+    )
+
+
+def normalize_events(rows: list[dict], home: str, rates: dict, image_amounts: dict[str, Decimal]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for event in rows:
+        key = event.get("linked_event_id") or event["event_id"]
+        grouped[key].append(event)
+
     result = []
-    for e in rows:
+    for group in grouped.values():
+        e = max(group, key=_event_precedence)
         if e["status"] in {"failed", "cancelled", "unrealized"} or e["direction"] == "non_cash":
             continue
-        key = e.get("linked_event_id") or e["event_id"]
-        if key in seen:
-            continue
-        seen.add(key)
         d = parse_date(e.get("settlement_date") or e["event_date"])
-        result.append({**e, "cash_date": d, "home_amount": event_amount(e, home, rates)})
+        result.append({**e, "cash_date": d, "home_amount": event_amount(e, home, rates, image_amounts)})
     return result
 
 
@@ -101,7 +137,8 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
             amounts = re.findall(r"\b(INR|IDR|ZAR|USD|EUR)\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text, flags=re.I)
             if amounts:
                 currency, raw = amounts[0]
-                val = convert(Decimal(raw.replace(",", "")), currency.upper(), home, request_date, rates)
+                conversion_date = message_date(text, request_date)
+                val = convert(Decimal(raw.replace(",", "")), currency.upper(), home, conversion_date, rates)
                 new_salary = val
                 is_terminated = False
 
@@ -224,8 +261,12 @@ def build_flows(request: dict, profile: dict, events: list[dict], rates: dict, m
         if items[-1]["cash_date"] < start - timedelta(days=max_inactivity):
             continue
 
-        amts = sorted(x["home_amount"] for x in items)
-        amt = amts[len(amts) // 2]
+        # Recurring variable expenses are noisy; use the arithmetic mean across
+        # the observed cadence rather than one middle transaction. This avoids
+        # systematically underestimating recurring obligations when the recent
+        # sample contains unusually small purchases.
+        amts = [x["home_amount"] for x in items]
+        amt = sum(amts, ZERO) / Decimal(len(amts))
         source_event_id = items[-1]["event_id"]
 
         curr_d = items[-1]["cash_date"]
@@ -339,14 +380,14 @@ def find_spending_candidates(profile: dict, events: list[dict], requested: Decim
     return None, []
 
 
-def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, messages: list[dict] | None = None, data_options: list[dict] | None = None) -> dict[str, str]:
+def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, messages: list[dict] | None = None, data_options: list[dict] | None = None, image_amounts: dict[str, Decimal] | None = None) -> dict[str, str]:
     home = profile["home_currency"]
     start = parse_date(request["request_date"])
     deadline = parse_date(request["desired_completion_date"])
     amount = dec(request["requested_amount"])
     minimum = dec(profile["minimum_balance_to_keep"])
 
-    events = normalize_events(all_events, home, rates)
+    events = normalize_events(all_events, home, rates, image_amounts or BLANK_AMOUNTS)
     balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
     safe = safe_amount(balance, flows, start, amount, minimum)
 
@@ -484,6 +525,7 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 def run(dataset_dir: Path, output_path: Path) -> None:
     data = load_dataset(dataset_dir)
     rates = data["rates_by_date_pair"]
+    image_amounts = resolve_image_amounts(data["images"], dataset_dir / "media" / "images")
     events_by_user = data["events_by_user"]
     options = data["request_payment_options"]
     messages = data.get("messages_by_user", {})
@@ -497,6 +539,7 @@ def run(dataset_dir: Path, output_path: Path) -> None:
             rates,
             messages.get(r["user_id"], []),
             options,
+            image_amounts,
         )
         for r in data["requests"]
     ]

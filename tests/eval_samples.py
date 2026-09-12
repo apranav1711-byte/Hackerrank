@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import sys
+import argparse
 from pathlib import Path
 
 # Add code directory to path
@@ -12,8 +13,7 @@ from data_loader import load_dataset
 from main import decide
 import main
 
-def evaluate_samples():
-    dataset_dir = ROOT / "dataset"
+def evaluate_samples(dataset_dir: Path):
     data = load_dataset(dataset_dir)
     
     samples_path = dataset_dir / "sample_requests.csv"
@@ -26,6 +26,8 @@ def evaluate_samples():
     events_by_user = data["events_by_user"]
     profiles = data["profiles_by_user"]
     messages = data.get("messages_by_user", {})
+    from evidence import resolve_image_amounts
+    image_amounts = resolve_image_amounts(data["images"], dataset_dir / "media" / "images")
 
     fields = [
         "amount_safe_to_pay",
@@ -43,7 +45,7 @@ def evaluate_samples():
         req_id = s["request_id"]
         u_id = s["user_id"]
         options = data["request_payment_options"]
-        pred = decide(s, profiles.get(u_id, {}), events_by_user.get(u_id, []), rates, messages.get(u_id, []), options)
+        pred = decide(s, profiles.get(u_id, {}), events_by_user.get(u_id, []), rates, messages.get(u_id, []), options, image_amounts)
 
         diffs = {}
         all_match = True
@@ -82,4 +84,6 @@ def evaluate_samples():
             print(f"    Predicted:    {pr}")
 
 if __name__ == "__main__":
-    evaluate_samples()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "dataset")
+    evaluate_samples(parser.parse_args().dataset_dir)

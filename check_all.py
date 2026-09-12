@@ -9,6 +9,8 @@ from __future__ import annotations
 import subprocess
 import sys
 import zipfile
+import argparse
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -24,16 +26,22 @@ def run_unit_tests() -> bool:
     return res.returncode == 0
 
 
-def run_benchmark() -> bool:
+def run_benchmark(dataset_dir: Path) -> bool | None:
     print_step("2. Running Ground-Truth Benchmark on Public Samples")
-    res = subprocess.run([sys.executable, "tests/eval_samples.py"], cwd=ROOT)
+    if not dataset_dir.exists():
+        print(f"SKIPPED: dataset directory not found: {dataset_dir}")
+        return None
+    res = subprocess.run([sys.executable, "tests/eval_samples.py", "--dataset-dir", str(dataset_dir)], cwd=ROOT)
     return res.returncode == 0
 
 
-def run_evaluation() -> bool:
+def run_evaluation(dataset_dir: Path) -> bool | None:
     print_step("3. Evaluating and Validating Output on Full Dataset (250 Requests)")
+    if not dataset_dir.exists():
+        print(f"SKIPPED: dataset directory not found: {dataset_dir}")
+        return None
     res = subprocess.run(
-        [sys.executable, "code/evaluate.py", "--dataset-dir", "dataset", "--output", "output.csv"],
+        [sys.executable, "code/evaluate.py", "--dataset-dir", str(dataset_dir), "--output", "output.csv"],
         cwd=ROOT,
     )
     return res.returncode == 0
@@ -76,19 +84,24 @@ def verify_log() -> bool:
     if "SESSION START" not in text:
         print("ERROR: SESSION START missing in log.txt.")
         return False
-    if "tool=Antigravity" not in text:
-        print("ERROR: tool=Antigravity tag missing in log.txt.")
+    if not re.search(r"^tool=\S+", text, flags=re.MULTILINE):
+        print("ERROR: a non-empty tool= tag is missing in log.txt.")
         return False
     print("Audit log verified: properly formatted and AGENTS.md compliant.")
     return True
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Run the Buy or Wait quality gate")
+    parser.add_argument("--dataset-dir", type=Path, default=ROOT / "dataset")
+    args = parser.parse_args()
+
     print(f"Starting HackerRank Orchestrate Quality Gate in {ROOT}")
+    print(f"Dataset directory: {args.dataset_dir}")
     steps = [
         ("Unit Tests", run_unit_tests),
-        ("Benchmark Evaluation", run_benchmark),
-        ("Dataset & Validator", run_evaluation),
+        ("Benchmark Evaluation", lambda: run_benchmark(args.dataset_dir)),
+        ("Dataset & Validator", lambda: run_evaluation(args.dataset_dir)),
         ("Packaging & Archive", run_packaging),
         ("Log Verification", verify_log),
     ]
@@ -100,16 +113,24 @@ def main():
 
     print(f"\n{'='*70}\nFINAL QUALITY GATE SUMMARY\n{'='*70}")
     all_passed = True
+    has_skips = False
     for name, ok in results:
-        status = "PASSED [OK]" if ok else "FAILED [X]"
+        if ok is None:
+            status = "SKIPPED [-]"
+            has_skips = True
+        else:
+            status = "PASSED [OK]" if ok else "FAILED [X]"
         print(f"  * {name:<25}: {status}")
-        if not ok:
+        if ok is False:
             all_passed = False
 
     print("="*70)
-    if all_passed:
-        print("ALL QUALITY CHECKS PASSED - Solution is 100% submission ready!")
+    if all_passed and not has_skips:
+        print("ALL QUALITY CHECKS PASSED - Solution is ready for dataset-backed review!")
         print("Submission portal: https://www.hackerrank.com/contests/hackerrank-orchestrate-september26/challenges/buy-or-wait/submission")
+        return 0
+    elif all_passed:
+        print("LOCAL QUALITY CHECKS PASSED - Dataset-backed checks remain pending.")
         return 0
     else:
         print("SOME CHECKS FAILED - Please review the logs above.")
