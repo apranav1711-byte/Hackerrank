@@ -164,7 +164,14 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
     return new_salary, is_terminated
 
 
-def build_flows(request: dict, profile: dict, events: list[dict], rates: dict, messages: list[dict] | None = None):
+def build_flows(
+    request: dict,
+    profile: dict,
+    events: list[dict],
+    rates: dict,
+    messages: list[dict] | None = None,
+    recurrence_estimator: str = "median",
+):
     start = parse_date(request["request_date"])
     end = start + timedelta(days=HORIZON)
     balance = dec(profile["current_available_balance"])
@@ -281,7 +288,12 @@ def build_flows(request: dict, profile: dict, events: list[dict], rates: dict, m
             continue
 
         amts = sorted(x["home_amount"] for x in items)
-        amt = amts[len(amts) // 2]
+        if recurrence_estimator == "minimum":
+            amt = amts[0]
+        elif recurrence_estimator == "mean":
+            amt = sum(amts, ZERO) / Decimal(len(amts))
+        else:
+            amt = amts[len(amts) // 2]
         source_event_id = items[-1]["event_id"]
 
         curr_d = items[-1]["cash_date"]
@@ -404,7 +416,10 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 
     events = normalize_events(all_events, home, rates, image_amounts or BLANK_AMOUNTS)
     balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
-    safe = safe_amount(balance, flows, start, amount, minimum)
+    _, safe_amount_flows, _, _ = build_flows(
+        request, profile, events, rates, messages, recurrence_estimator="minimum"
+    )
+    safe = safe_amount(balance, safe_amount_flows, start, amount, minimum)
 
     # Earliest safe date for single full payment
     earliest = ""
