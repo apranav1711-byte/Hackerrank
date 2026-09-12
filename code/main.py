@@ -345,12 +345,13 @@ def simulate(
     return True
 
 
-def safe_amount(balance: Decimal, flows: dict[date, Decimal], start: date, requested: Decimal, minimum: Decimal) -> Decimal:
+def safe_amount(balance: Decimal, flows: dict[date, Decimal], start: date, requested: Decimal, minimum: Decimal, next_income_date: date | None = None) -> Decimal:
+    end_dt = (next_income_date - timedelta(days=1)) if (next_income_date and next_income_date > start) else None
     lo, hi = 0, int((requested / CENT).to_integral_value(rounding=ROUND_HALF_UP))
     while lo <= hi:
         mid = (lo + hi) // 2
         candidate = Decimal(mid) * CENT
-        if simulate(balance, flows, start, [(start, candidate)], minimum):
+        if simulate(balance, flows, start, [(start, candidate)], minimum, end_date=end_dt):
             lo = mid + 1
         else:
             hi = mid - 1
@@ -402,15 +403,20 @@ def parse_methods(profile: dict) -> set[str]:
 
 
 def find_spending_candidates(profile: dict, events: list[dict], requested: Decimal, deadline: date, balance: Decimal, flows: dict[date, Decimal], start: date, minimum: Decimal, projected_items: list[tuple[date, Decimal, str]]):
-    projected_event_ids = set(item[2] for item in projected_items)
     events_by_id = {e["event_id"]: e for e in events}
 
     stop_cats = set(x for x in profile.get("expense_categories_user_is_willing_to_stop", "").split("|") if x)
     reduce_cats = set(x for x in profile.get("expense_categories_user_is_willing_to_reduce", "").split("|") if x)
     protect_cats = set(x for x in profile.get("expense_categories_to_protect", "").split("|") if x)
 
+    # Consider both projected items and active historical recurring events matching flexible categories
+    candidate_event_ids = set(item[2] for item in projected_items)
+    for e in events:
+        if e["category"] in stop_cats or e["category"] in reduce_cats:
+            candidate_event_ids.add(e["event_id"])
+
     possible_actions = []
-    for eid in projected_event_ids:
+    for eid in candidate_event_ids:
         e = events_by_id.get(eid)
         if not e:
             continue
@@ -418,11 +424,11 @@ def find_spending_candidates(profile: dict, events: list[dict], requested: Decim
         if cat in protect_cats:
             continue
         flex = e.get("flexibility", "fixed")
-        amt = e["home_amount"]
+        amt = e.get("home_amount") or dec(e.get("amount"))
 
-        if cat in stop_cats and flex in {"stoppable", "reducible_or_stoppable"}:
+        if cat in stop_cats and flex in {"stoppable", "reducible_or_stoppable", "flexible", "variable"}:
             possible_actions.append(("stop", eid, ZERO, amt, f"stop:{eid}"))
-        if cat in reduce_cats and flex in {"reducible", "reducible_or_stoppable"}:
+        if cat in reduce_cats and flex in {"reducible", "reducible_or_stoppable", "flexible", "variable"}:
             min_allowed = dec(e.get("minimum_allowed_amount"))
             new_val = min_allowed if min_allowed > ZERO else max(min_allowed, amt * Decimal("0.5"))
             savings = amt - new_val
@@ -456,7 +462,15 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
     _, safe_amount_flows, _, _ = build_flows(
         request, profile, events, rates, messages, recurrence_estimator="minimum"
     )
-    safe = safe_amount(balance, safe_amount_flows, start, amount, minimum)
+
+    # Find next scheduled/recurring income date
+    future_incomes = [
+        e["cash_date"] for e in relevant
+        if e["cash_date"] >= start and e["direction"] == "credit" and e["status"] in {"settled", "scheduled"}
+    ]
+    next_income = min(future_incomes) if future_incomes else None
+
+    safe = safe_amount(balance, safe_amount_flows, start, amount, minimum, next_income_date=next_income)
 
     # Earliest safe date for single full payment
     earliest = ""
@@ -506,7 +520,7 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
         if safe > ZERO and safe < amount and earliest and earliest <= deadline:
             payments = [(start, safe), (earliest, amount - safe)]
             if simulate(balance, flows, start, payments, minimum, end_date=deadline):
-                candidates.append((0, 0, amount, start, 2, "00", "partial_payment", payments, "none"))
+                candidates.append((-1, 0, amount, start, 2, "00", "partial_payment", payments, "none"))
 
     # 4. Spending changes
     adjustments, labels = find_spending_candidates(profile, events, amount, deadline, balance, flows, start, minimum, projected_items)
@@ -560,14 +574,18 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
             status = "affordable_with_plan"
             explanation = f"Pay {home} {money(amount)} using {method.replace('_', ' ')}."
 
+        out_safe = safe
+        if method in {"installments", "partial_payment"}:
+            out_safe = payments[0][1]
+
         return {
             "request_id": request["request_id"],
-            "amount_safe_to_pay": money(safe),
+            "amount_safe_to_pay": money(out_safe),
             "affordability_status": status,
             "recommended_payment_method": method,
             "payment_plan": payment_string(payments),
             "earliest_date_for_full_payment": earliest.isoformat() if earliest else "",
-            "spending_changes_needed": changes_text or "none",
+            "spending_changes_needed": changes_text,
             "decision_explanation": explanation,
         }
 
