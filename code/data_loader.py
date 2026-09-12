@@ -44,6 +44,7 @@ def load_dataset(dataset_dir: Path) -> dict[str, Any]:
     data["options_by_request"] = group(data["request_payment_options"], "request_id")
     data["messages_by_request"] = group(data["messages"], "request_id")
     data["messages_by_event"] = group(data["messages"], "related_event_id")
+    data["messages_by_user"] = group(data["messages"], "user_id")
     data["images_by_event"] = group(data["images"], "related_event_id")
     data["rates_by_date_pair"] = {
         (row["rate_date"], row["from_currency"], row["to_currency"]): row

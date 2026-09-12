@@ -61,16 +61,16 @@ def event_amount(event: dict, home: str, rates: dict) -> Decimal:
         amount = BLANK_AMOUNTS.get(event["event_id"], ZERO)
     return convert(amount, event.get("currency", home), home, parse_date(event.get("settlement_date") or event["event_date"]), rates)
 
-def recurrence_days(events: list[dict]) -> int | None:
+def recurrence_step(events: list[dict]) -> str | int | None:
     dates = sorted(parse_date(e.get("settlement_date") or e["event_date"]) for e in events)
     if len(dates) < 3:
         return None
-    gaps = [(b-a).days for a,b in zip(dates, dates[1:]) if 20 <= (b-a).days <= 370]
+    gaps = [(b-a).days for a,b in zip(dates, dates[1:]) if 3 <= (b-a).days <= 370]
     if len(gaps) < 2:
         return None
     gaps.sort()
     median = gaps[len(gaps)//2]
-    return 30 if 25 <= median <= 35 else 7 if 6 <= median <= 8 else 14 if 12 <= median <= 16 else 365 if 330 <= median <= 400 else None
+    return "monthly" if 25 <= median <= 35 else 7 if 6 <= median <= 8 else 14 if 12 <= median <= 16 else "yearly" if 330 <= median <= 400 else None
 
 def normalize_events(rows: list[dict], home: str, rates: dict) -> list[dict]:
     seen = set(); result = []
@@ -85,10 +85,31 @@ def normalize_events(rows: list[dict], home: str, rates: dict) -> list[dict]:
         result.append({**e, "cash_date": d, "home_amount": event_amount(e, home, rates)})
     return result
 
-def build_flows(request: dict, profile: dict, events: list[dict], rates: dict) -> tuple[Decimal, dict[date, Decimal], list[dict]]:
+def message_salary_overrides(messages: list[dict], home: str, rates: dict) -> list[tuple[date, Decimal]]:
+    overrides = []
+    for message in messages:
+        text = message.get("message_text", "")
+        if message.get("source_type") not in {"employer", "financial_service"} or not any(x in text.lower() for x in ("salary", "gaji", "payroll")):
+            continue
+        amounts = re.findall(r"\b(INR|IDR|ZAR|USD|EUR)\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text, flags=re.I)
+        dates = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+        if amounts and dates:
+            currency, raw = amounts[0]
+            overrides.append((parse_date(dates[0]), convert(Decimal(raw.replace(",", "")), currency.upper(), home, parse_date(dates[0]), rates)))
+    return sorted(overrides)
+
+def build_flows(request: dict, profile: dict, events: list[dict], rates: dict, messages: list[dict] | None = None) -> tuple[Decimal, dict[date, Decimal], list[dict]]:
     start = parse_date(request["request_date"]); end = start + timedelta(days=HORIZON)
     balance = dec(profile["current_available_balance"])
     flows: dict[date, Decimal] = defaultdict(lambda: ZERO)
+    salary_overrides = message_salary_overrides(messages or [], profile["home_currency"], rates)
+
+    def adjusted_amount(e, d):
+        if e["direction"] == "credit" and e["category"] == "salary" and salary_overrides:
+            applicable = [v for effective, v in salary_overrides if effective <= d]
+            if applicable:
+                return applicable[-1]
+        return e["home_amount"]
     relevant = []
     for e in events:
         d = e["cash_date"]
@@ -97,25 +118,43 @@ def build_flows(request: dict, profile: dict, events: list[dict], rates: dict) -
             if e["status"] == "pending" and e["direction"] == "credit":
                 continue
             sign = Decimal("1") if e["direction"] == "credit" else Decimal("-1")
-            flows[d] += sign * e["home_amount"]
+            flows[d] += sign * adjusted_amount(e, d)
             relevant.append(e)
     # Repeat high-confidence monthly/weekly income and flexible/fixed expenses.
-    grouped: dict[tuple[str,str,str], list[dict]] = defaultdict(list)
+    grouped: dict[tuple[str,str,str,str], list[dict]] = defaultdict(list)
     for e in events:
         if e["cash_date"] < start and e["cash_date"] >= start - timedelta(days=400):
-            grouped[(e["event_type"], e["category"], e["direction"])].append(e)
+            # Income streams must stay separate: a quarterly bonus or commission
+            # must not alter the recurring base-pay forecast. Variable expenses
+            # remain grouped by category so their cadence can still be inferred.
+            stream = e.get("description", "").lower() if e["direction"] == "credit" else ""
+            grouped[(e["event_type"], e["category"], e["direction"], stream)].append(e)
     for key, hist in grouped.items():
-        cadence = recurrence_days(hist)
+        cadence = recurrence_step(hist)
         if not cadence:
             continue
         last = max(hist, key=lambda x: x["cash_date"])
-        amount = last["home_amount"]
+        description = " ".join(x.get("description", "") for x in hist[-3:]).lower()
+        terminal_income = any(
+            x["direction"] == "credit"
+            and any(word in x.get("description", "").lower() for word in ("final", "last", "termination", "terminated", "leaving", "resign"))
+            for x in events
+        )
+        if key[2] == "credit" and (terminal_income or any(word in description for word in ("final", "last", "termination", "terminated", "leaving", "resign"))):
+            continue
+        values = sorted(x["home_amount"] for x in hist)
+        amount = values[len(values) // 2] if key[2] == "debit" else last["home_amount"]
         d = last["cash_date"]
         while True:
-            d = d + timedelta(days=cadence)
+            d = add_months(d, 1) if cadence == "monthly" else add_months(d, 12) if cadence == "yearly" else d + timedelta(days=cadence)
             if d > end: break
-            if d >= start and not any(x["cash_date"] == d and (x["event_type"],x["category"],x["direction"]) == key for x in relevant):
-                flows[d] += amount if key[2] == "credit" else -amount
+            if d >= start and not any(x["cash_date"] == d and (x["event_type"],x["category"],x["direction"],x.get("description", "").lower() if x["direction"] == "credit" else "") == key for x in relevant):
+                recurring_amount = amount
+                if key[2] == "credit" and key[1] == "salary" and salary_overrides:
+                    applicable = [v for effective, v in salary_overrides if effective <= d]
+                    if applicable:
+                        recurring_amount = applicable[-1]
+                flows[d] += recurring_amount if key[2] == "credit" else -recurring_amount
     return balance, flows, relevant
 
 def simulate(balance: Decimal, flows: dict[date, Decimal], start: date, payments: list[tuple[date, Decimal]], minimum: Decimal, changes: dict[str, Decimal] | None = None, events: list[dict] | None = None) -> bool:
@@ -163,9 +202,9 @@ def spending_candidates(profile, events, requested, deadline, balance, flows, st
         if simulate(balance, flows, start, [(start, requested)], minimum, changes, events): return changes, labels
     return None, []
 
-def decide(request, profile, all_events, rates):
+def decide(request, profile, all_events, rates, messages=None):
     home=profile["home_currency"]; start=parse_date(request["request_date"]); deadline=parse_date(request["desired_completion_date"]); amount=dec(request["requested_amount"]); minimum=dec(profile["minimum_balance_to_keep"])
-    events=normalize_events(all_events, home, rates); balance, flows, future=build_flows(request, profile, events, rates)
+    events=normalize_events(all_events, home, rates); balance, flows, future=build_flows(request, profile, events, rates, messages)
     safe=safe_amount(balance, flows, start, amount, minimum, future)
     earliest=""
     for i in range(HORIZON+1):
@@ -195,7 +234,7 @@ def decide(request, profile, all_events, rates):
 def run(dataset_dir: Path, output_path: Path) -> None:
     global DATA_OPTIONS
     data=load_dataset(dataset_dir); DATA_OPTIONS=data["request_payment_options"]; rates=data["rates_by_date_pair"]; events_by_user=data["events_by_user"]
-    rows=[decide(r,data["profiles_by_user"].get(r["user_id"],{}),events_by_user.get(r["user_id"],[]),rates) for r in data["requests"]]
+    rows=[decide(r,data["profiles_by_user"].get(r["user_id"],{}),events_by_user.get(r["user_id"],[]),rates,data.get("messages_by_user",{}).get(r["user_id"],[])) for r in data["requests"]]
     with output_path.open("w",encoding="utf-8",newline="") as f:
         writer=csv.DictWriter(f,fieldnames=OUTPUT_COLUMNS); writer.writeheader(); writer.writerows(rows)
     print(f"Wrote {len(rows)} rows to {output_path}")
