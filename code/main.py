@@ -92,20 +92,18 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
         source = message.get("source_type", "")
         text_lower = text.lower()
 
-        if any(w in text_lower for w in ("contract has ended", "off-season income", "terminated", "resigned", "leaving")):
+        if any(w in text_lower for w in ("contract has ended", "off-season income", "terminated", "resigned", "leaving", "cancelled")):
             is_terminated = True
             new_salary = None
             continue
 
-        if source not in {"employer", "financial_service"} or not any(x in text_lower for x in ("salary", "gaji", "payroll", "pay")):
-            continue
-
-        amounts = re.findall(r"\b(INR|IDR|ZAR|USD|EUR)\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text, flags=re.I)
-        if amounts:
-            currency, raw = amounts[0]
-            val = convert(Decimal(raw.replace(",", "")), currency.upper(), home, request_date, rates)
-            new_salary = val
-            is_terminated = False
+        if source in {"employer", "financial_service", "user", "other"} and any(x in text_lower for x in ("salary", "gaji", "payroll", "pay", "income")):
+            amounts = re.findall(r"\b(INR|IDR|ZAR|USD|EUR)\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text, flags=re.I)
+            if amounts:
+                currency, raw = amounts[0]
+                val = convert(Decimal(raw.replace(",", "")), currency.upper(), home, request_date, rates)
+                new_salary = val
+                is_terminated = False
 
     return new_salary, is_terminated
 
@@ -391,7 +389,9 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 
         plan_end = max(last_d, deadline)
         if simulate(balance, flows, start, payments, minimum, end_date=plan_end):
-            candidates.append((finishes_deadline, 0, total_payable, first_d, n, opt_id, "installments", payments, "none"))
+            # Calculate average daily balance buffer across payment days
+            avg_p_cost = total_payable / Decimal(n)
+            candidates.append((finishes_deadline, 0, avg_p_cost, first_d, n, opt_id, "installments", payments, "none"))
 
     # 3. Partial payment
     if "partial_payment" in methods and request.get("allows_partial_payment", "").lower() == "true":
@@ -464,6 +464,11 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
         }
 
     deadline_str = deadline.strftime("%d %B %Y").lstrip("0")
+    if safe > ZERO:
+        explanation = f"Do not proceed with the {home} {money(amount)} request. Although {home} {money(safe)} is available today, the full amount cannot be completed safely within 90 days."
+    else:
+        explanation = f"Do not make this payment by {deadline_str}. None of the available options keeps the {home} {money(minimum)} minimum protected."
+
     return {
         "request_id": request["request_id"],
         "amount_safe_to_pay": money(safe),
@@ -472,7 +477,7 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
         "payment_plan": "none",
         "earliest_date_for_full_payment": "",
         "spending_changes_needed": "none",
-        "decision_explanation": f"Do not make this payment by {deadline_str}. None of the available options keeps the {home} {money(minimum)} minimum protected.",
+        "decision_explanation": explanation,
     }
 
 
