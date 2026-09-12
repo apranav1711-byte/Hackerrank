@@ -11,22 +11,14 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 from data_loader import load_dataset
+from evidence import resolve_image_amounts, VERIFIED_IMAGE_AMOUNTS
 from validator import OUTPUT_COLUMNS
 
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
 HORIZON = 90
 
-BLANK_AMOUNTS = {
-    "event_253": Decimal("4365000"), "event_1442": Decimal("100000"),
-    "event_1545": Decimal("41272"), "event_1700": Decimal("2854"),
-    "event_1786": Decimal("822.05"), "event_3051": Decimal("1090"),
-    "event_3231": Decimal("4722"), "event_4535": Decimal("15339"),
-    "event_5170": Decimal("723"), "event_6033": Decimal("1330"),
-    "event_6859": Decimal("14000"), "event_7307": Decimal("393.22"),
-    "event_7941": Decimal("2298"), "event_9421": Decimal("1400"),
-    "event_9806": Decimal("9968"), "event_10521": Decimal("393.22"),
-}
+BLANK_AMOUNTS = VERIFIED_IMAGE_AMOUNTS
 
 
 def dec(value: str | None) -> Decimal:
@@ -425,7 +417,21 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
             explanation = f"Pay {home} {first_amt} today and the remaining {home} {second_amt} on {second_date_str}. This completes the full request and keeps the {home} {money(minimum)} minimum protected."
         elif changes_text != "none":
             status = "affordable_with_plan"
-            explanation = f"Apply spending adjustments, then pay {home} {money(amount)} today. This leaves at least {home} {money(minimum)} available."
+            events_by_id = {e["event_id"]: e for e in all_events}
+            action_phrases = []
+            for act in changes_text.split("|"):
+                if act.startswith("stop:"):
+                    eid = act.split(":")[1]
+                    desc = events_by_id.get(eid, {}).get("description") or events_by_id.get(eid, {}).get("category") or "subscription"
+                    action_phrases.append(f"Stop the {desc.lower()}")
+                elif act.startswith("reduce_to:"):
+                    parts = act.split(":")
+                    eid = parts[1]
+                    target_amt = parts[2]
+                    cat = events_by_id.get(eid, {}).get("category") or "flexible spending"
+                    action_phrases.append(f"Reduce {cat} to {home} {target_amt}")
+            action_desc = ", and ".join(action_phrases) if action_phrases else "Apply spending adjustments"
+            explanation = f"{action_desc}, then pay {home} {money(amount)} today. This leaves at least {home} {money(minimum)} available."
         elif method == "wait":
             status = "affordable_later"
             wait_date_str = payments[0][0].strftime("%d %B %Y").lstrip("0")
