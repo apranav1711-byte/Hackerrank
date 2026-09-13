@@ -87,21 +87,47 @@ def validate_output(
         if not row.get("decision_explanation", "").strip():
             errors.append(f"row {number}: empty decision_explanation")
 
-        # 1. Consistency between status, method, and plan
+        # 1. Consistency between status, method, and plan (Matthew-style invariants)
         if status == "affordable_now":
             if method != "full_payment":
                 errors.append(f"row {number}: affordable_now must use full_payment method")
             if changes != "none":
                 errors.append(f"row {number}: affordable_now cannot require spending changes")
+            if safe != requested:
+                errors.append(f"row {number}: affordable_now requires amount_safe_to_pay == requested_amount ({safe} != {requested})")
+            if earliest != request.get("request_date", ""):
+                errors.append(f"row {number}: affordable_now requires earliest_date_for_full_payment == request_date ({earliest} != {request.get('request_date')})")
 
         elif status == "not_affordable":
             if method != "not_recommended":
                 errors.append(f"row {number}: not_affordable must recommend not_recommended")
             if plan != "none":
                 errors.append(f"row {number}: not_affordable must have payment_plan='none'")
+            if earliest != "":
+                errors.append(f"row {number}: not_affordable requires empty earliest_date_for_full_payment, got '{earliest}'")
+
+        elif status == "affordable_later":
+            if method != "wait":
+                errors.append(f"row {number}: affordable_later must use wait method")
+            if not earliest:
+                errors.append(f"row {number}: affordable_later requires earliest_date_for_full_payment")
+
+        # Invariant for wait
+        if method == "wait":
+            if status != "affordable_later":
+                errors.append(f"row {number}: wait requires status affordable_later, got '{status}'")
+            if not earliest:
+                errors.append(f"row {number}: wait requires non-empty earliest_date_for_full_payment")
+
+        # Invariant for full_payment
+        if method == "full_payment":
+            if status not in ("affordable_now", "affordable_with_plan"):
+                errors.append(f"row {number}: full_payment requires affordable_now or affordable_with_plan, got '{status}'")
 
         # 2. Validate partial payment sums and dates
         if method == "partial_payment":
+            if status != "affordable_with_plan":
+                errors.append(f"row {number}: partial_payment requires status affordable_with_plan, got '{status}'")
             if plan == "none":
                 errors.append(f"row {number}: partial_payment method requires a valid payment_plan")
             else:
@@ -128,36 +154,61 @@ def validate_output(
                     errors.append(f"row {number}: partial payment plan sum {total_sum} does not equal requested {request['requested_amount']}")
 
         # 3. Validate installment plan against options
-        if method == "installments" and options_by_request:
-            req_opts = options_by_request.get(request["request_id"], [])
-            valid_opt_plans = [
-                "|".join(f"{parse_iso_date(opt['first_payment_date']) + timedelta(days=int(opt['payment_frequency_days'] or 0)*i)}:{decimal(opt['payment_amount']):.2f}" for i in range(int(opt["number_of_payments"])))
-                for opt in req_opts if opt["payment_method"] == "installments"
-            ]
-            # Verify plan syntax
-            entries = plan.split("|")
-            for entry in entries:
-                if ":" not in entry:
-                    errors.append(f"row {number}: invalid plan entry '{entry}'")
-                    continue
-                d_str, a_str = entry.split(":", 1)
-                try:
-                    parse_iso_date(d_str)
-                    decimal(a_str)
-                except ValueError as exc:
-                    errors.append(f"row {number}: {exc} in installment plan")
+        if method == "installments":
+            if status != "affordable_with_plan":
+                errors.append(f"row {number}: installments requires status affordable_with_plan, got '{status}'")
+            if options_by_request:
+                req_opts = options_by_request.get(request["request_id"], [])
+                valid_opt_plans = [
+                    "|".join(f"{parse_iso_date(opt['first_payment_date']) + timedelta(days=int(opt['payment_frequency_days'] or 0)*i)}:{decimal(opt['payment_amount']):.2f}" for i in range(int(opt["number_of_payments"])))
+                    for opt in req_opts if opt["payment_method"] == "installments"
+                ]
+                # Verify plan syntax
+                entries = plan.split("|")
+                for entry in entries:
+                    if ":" not in entry:
+                        errors.append(f"row {number}: invalid plan entry '{entry}'")
+                        continue
+                    d_str, a_str = entry.split(":", 1)
+                    try:
+                        parse_iso_date(d_str)
+                        decimal(a_str)
+                    except ValueError as exc:
+                        errors.append(f"row {number}: {exc} in installment plan")
 
-        # 4. Validate spending changes syntax
+        # 4. Validate spending changes syntax and invariants (Checks 11..14)
         if changes != "none":
             actions = changes.split("|")
+            if len(actions) > 3:
+                errors.append(f"row {number}: spending_changes_needed has {len(actions)} actions; maximum allowed is 3")
+            seen_stop = set()
+            seen_reduce = set()
             for act in actions:
-                if not (act.startswith("stop:") or act.startswith("reduce_to:")):
+                parts = act.split(":")
+                kind = parts[0]
+                if kind == "stop" and len(parts) == 2:
+                    eid = parts[1]
+                    seen_stop.add(eid)
+                elif kind == "reduce_to" and len(parts) == 3:
+                    eid = parts[1]
+                    try:
+                        decimal(parts[2])
+                    except ValueError:
+                        errors.append(f"row {number}: invalid amount in reduce_to action '{act}'")
+                    seen_reduce.add(eid)
+                else:
                     errors.append(f"row {number}: invalid spending_changes_needed action '{act}'")
+            conflict = seen_stop & seen_reduce
+            if conflict:
+                errors.append(f"row {number}: event {sorted(conflict)} is both stopped and reduced")
 
-        # 5. Validate earliest date format
+        # 5. Validate earliest date format and forecast range
         if earliest:
             try:
-                parse_iso_date(earliest)
+                e_date = parse_iso_date(earliest)
+                r_date = parse_iso_date(request["request_date"])
+                if not (r_date <= e_date <= r_date + timedelta(days=90)):
+                    errors.append(f"row {number}: earliest_date_for_full_payment '{earliest}' is outside 90-day forecast horizon")
             except ValueError as exc:
                 errors.append(f"row {number}: invalid earliest_date_for_full_payment '{earliest}'")
 
