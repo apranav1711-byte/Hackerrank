@@ -194,6 +194,7 @@ def build_flows(
     rates: dict,
     messages: list[dict] | None = None,
     recurrence_estimator: str = "median",
+    var_pct: float | None = None,
 ):
     start = parse_date(request["request_date"])
     end = start + timedelta(days=HORIZON)
@@ -270,7 +271,10 @@ def build_flows(
     )
 
     VARIABLE_CATS = {"groceries", "transport"}
-    if "dining" in reducible_or_stoppable:
+    if var_pct is not None:
+        if "dining" not in reducible_or_stoppable:
+            VARIABLE_CATS.add("dining")
+    elif "dining" in reducible_or_stoppable:
         VARIABLE_CATS.add("dining")
 
     DISCRETIONARY_CATS = {"investment_purchase", "investment", "windfall"}
@@ -314,14 +318,19 @@ def build_flows(
             continue
 
         amts = sorted(x["home_amount"] for x in items)
-        if recurrence_estimator == "minimum":
+        med = amts[len(amts) // 2]
+        mean = sum(amts, ZERO) / Decimal(len(amts))
+        if is_var and var_pct is not None:
+            idx = min(len(amts) - 1, int(len(amts) * var_pct))
+            amt = amts[idx]
+        elif recurrence_estimator == "minimum":
             amt = amts[0]
         elif recurrence_estimator == "mean":
-            amt = sum(amts, ZERO) / Decimal(len(amts))
+            amt = mean
         elif recurrence_estimator == "latest":
             amt = items[-1]["home_amount"]
         else:
-            amt = amts[len(amts) // 2]
+            amt = med
         source_event_id = items[-1]["event_id"]
 
         curr_d = items[-1]["cash_date"]
@@ -481,9 +490,8 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 
     events = normalize_events(all_events, home, rates, image_amounts or BLANK_AMOUNTS)
     balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
-    safe = safe_amount(balance, flows, start, amount, minimum)
 
-    # Earliest safe date for single full payment
+    # Earliest safe date for single full payment (median baseline flows)
     earliest = ""
     for i in range(HORIZON + 1):
         d = start + timedelta(days=i)
@@ -491,8 +499,31 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
             earliest = d
             break
 
+    # Conservative safe amount (AGENTS.md §6.3)
+    sal_msg_override, is_terminated = message_salary_info(messages or [], profile["home_currency"], rates, start)
+    all_salaries = [
+        e for e in events
+        if e["direction"] == "credit" and (
+            e["category"] == "salary" or "salary" in e.get("description", "").lower() or "payroll" in e.get("description", "").lower()
+        )
+    ]
+    has_terminal_event = any(any(w in e.get("description", "").lower() for w in ("final", "termination", "resigned")) for e in all_salaries)
+    is_term = is_terminated or has_terminal_event
+    h = 85 if is_term else HORIZON
+
     if earliest == start:
         safe = amount
+    else:
+        c_bal, c_flows, _, _ = build_flows(request, profile, events, rates, messages, var_pct=0.70)
+        lo, hi = 0, int((amount / CENT).to_integral_value(rounding=ROUND_HALF_UP))
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            cand = Decimal(mid) * CENT
+            if simulate(c_bal, c_flows, start, [(start, cand)], minimum, end_date=start + timedelta(days=h)):
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        safe = max(ZERO, Decimal(hi) * CENT)
 
     methods = parse_methods(profile)
     max_months = int(profile["max_installment_months"]) if profile.get("max_installment_months") else None
