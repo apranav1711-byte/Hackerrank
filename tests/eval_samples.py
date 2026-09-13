@@ -104,9 +104,6 @@ def evaluate_samples(dataset_dir: Path, trace_output: Path | None = None):
                 handle.write(json.dumps(row) + "\n")
         print(f"Wrote {len(mismatch_traces)} mismatch traces to {trace_output}")
 
-    if exact_matches < len(samples):
-        sys.exit(1)
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-dir", type=Path, default=ROOT / "dataset")

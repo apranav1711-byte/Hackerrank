@@ -141,10 +141,9 @@ def normalize_events(rows: list[dict], home: str, rates: dict, image_amounts: di
     return result
 
 
-def message_salary_info(messages: list[dict], home: str, rates: dict, request_date: date) -> tuple[Decimal | None, bool, int | None]:
+def message_salary_info(messages: list[dict], home: str, rates: dict, request_date: date) -> tuple[Decimal | None, bool]:
     new_salary = None
     is_terminated = False
-    new_salary_day = None
     for message in sorted(messages, key=lambda m: m.get("sent_at", "")):
         text = message.get("message_text", "")
         source = message.get("source_type", "")
@@ -169,11 +168,20 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
                 new_salary = val
                 is_terminated = False
 
-            d_match = message_date(text, None)
-            if d_match and any(w in text_lower for w in ("expected on", "scheduled for", "credit date", "payroll date", "resumes on", "salary is")):
-                new_salary_day = d_match.day
+    return new_salary, is_terminated
 
-    return new_salary, is_terminated, new_salary_day
+
+def message_salary_day(messages: list[dict]) -> int | None:
+    for message in sorted(messages, key=lambda m: m.get("sent_at", "")):
+        text = message.get("message_text", "")
+        source = message.get("source_type", "")
+        text_lower = text.lower()
+        if source in {"employer", "financial_service", "hr_department"}:
+            if any(x in text_lower for x in ("salary", "gaji", "payroll", "pay")):
+                d_match = message_date(text, None)
+                if d_match and any(w in text_lower for w in ("expected on", "scheduled for", "credit date", "payroll date", "resumes on", "salary is")):
+                    return d_match.day
+    return None
 
 
 def build_flows(
@@ -204,7 +212,8 @@ def build_flows(
                 projected_items.append((d, e["home_amount"], e["event_id"]))
 
     # 2. Confirmed & recurring salary projection
-    sal_msg_override, is_terminated, sal_day_override = message_salary_info(messages or [], profile["home_currency"], rates, start)
+    sal_msg_override, is_terminated = message_salary_info(messages or [], profile["home_currency"], rates, start)
+    sal_day_override = message_salary_day(messages or [])
     all_salaries = [
         e for e in events
         if e["direction"] == "credit" and (
