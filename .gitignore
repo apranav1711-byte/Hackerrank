@@ -12,3 +12,4 @@ log.txt
 dataset/
 data/raw/
 scratch/
+traces.jsonl

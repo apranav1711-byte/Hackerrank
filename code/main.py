@@ -187,6 +187,27 @@ def message_salary_day(messages: list[dict]) -> int | None:
     return None
 
 
+def message_gig_income_pending(messages: list[dict]) -> bool:
+    """Return True if a service_provider message signals a gig/platform payout is
+    still pending and not yet withdrawable — meaning projected salary income from
+    that platform should NOT be counted as available."""
+    PENDING_SIGNALS = ("payout is still pending", "payout still pending",
+                       "not withdrawable", "balance isn't withdrawable",
+                       "balance is not withdrawable", "earnings shown",
+                       "can change until the payout is closed",
+                       "payout has not been confirmed", "payout not confirmed")
+    for message in messages:
+        if message.get("source_type", "") != "service_provider":
+            continue
+        text_lower = message.get("message_text", "").lower()
+        # Must mention income/payout concepts
+        if not any(w in text_lower for w in ("payout", "earnings", "payment", "withdraw")):
+            continue
+        if any(sig in text_lower for sig in PENDING_SIGNALS):
+            return True
+    return False
+
+
 def build_flows(
     request: dict,
     profile: dict,
@@ -514,16 +535,34 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
     if earliest == start:
         safe = amount
     else:
-        c_bal, c_flows, _, _ = build_flows(request, profile, events, rates, messages, var_pct=0.70)
+        # Base (median) safe amount
         lo, hi = 0, int((amount / CENT).to_integral_value(rounding=ROUND_HALF_UP))
         while lo <= hi:
             mid = (lo + hi) // 2
             cand = Decimal(mid) * CENT
-            if simulate(c_bal, c_flows, start, [(start, cand)], minimum, end_date=start + timedelta(days=h)):
+            if simulate(balance, flows, start, [(start, cand)], minimum, end_date=start + timedelta(days=h)):
                 lo = mid + 1
             else:
                 hi = mid - 1
-        safe = max(ZERO, Decimal(hi) * CENT)
+        safe_base_amt = max(ZERO, Decimal(hi) * CENT)
+
+        # Conservative (70th pct variable spending) safe amount — use only when income is not terminated
+        if not is_term:
+            c_bal, c_flows, _, _ = build_flows(request, profile, events, rates, messages, var_pct=0.70)
+            lo, hi = 0, int((amount / CENT).to_integral_value(rounding=ROUND_HALF_UP))
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                cand = Decimal(mid) * CENT
+                if simulate(c_bal, c_flows, start, [(start, cand)], minimum, end_date=start + timedelta(days=h)):
+                    lo = mid + 1
+                else:
+                    hi = mid - 1
+            safe_cons_amt = max(ZERO, Decimal(hi) * CENT)
+            # Use the more conservative (lower) of the two estimates
+            safe = min(safe_base_amt, safe_cons_amt)
+        else:
+            # When income is terminated, conservative flows suppress income → too low; use base
+            safe = safe_base_amt
 
     methods = parse_methods(profile)
     max_months = int(profile["max_installment_months"]) if profile.get("max_installment_months") else None
