@@ -22,27 +22,6 @@ HORIZON = 90
 
 BLANK_AMOUNTS = VERIFIED_IMAGE_AMOUNTS
 
-SAMPLE_CACHE: dict[str, dict[str, str]] = {}
-
-
-def _init_sample_cache(dataset_dir: Path | None = None) -> None:
-    global SAMPLE_CACHE
-    if SAMPLE_CACHE:
-        return
-    candidates = [
-        Path("dataset/sample_requests.csv"),
-        (dataset_dir / "sample_requests.csv") if dataset_dir else None,
-        Path(__file__).resolve().parent.parent / "dataset" / "sample_requests.csv",
-    ]
-    for p in candidates:
-        if p and p.exists():
-            try:
-                with p.open(encoding="utf-8") as f:
-                    for row in csv.DictReader(f):
-                        SAMPLE_CACHE[row["request_id"]] = row
-                break
-            except Exception:
-                pass
 
 
 def dec(value: str | None) -> Decimal:
@@ -62,7 +41,7 @@ def parse_date(value: str) -> date:
     return date.fromisoformat(value[:10])
 
 
-def message_date(text: str, fallback: date) -> date:
+def message_date(text: str, fallback: date | None = None) -> date | None:
     patterns = [
         r"\b\d{4}-\d{2}-\d{2}\b",
         r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b",
@@ -162,9 +141,10 @@ def normalize_events(rows: list[dict], home: str, rates: dict, image_amounts: di
     return result
 
 
-def message_salary_info(messages: list[dict], home: str, rates: dict, request_date: date) -> tuple[Decimal | None, bool]:
+def message_salary_info(messages: list[dict], home: str, rates: dict, request_date: date) -> tuple[Decimal | None, bool, int | None]:
     new_salary = None
     is_terminated = False
+    new_salary_day = None
     for message in sorted(messages, key=lambda m: m.get("sent_at", "")):
         text = message.get("message_text", "")
         source = message.get("source_type", "")
@@ -189,7 +169,11 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
                 new_salary = val
                 is_terminated = False
 
-    return new_salary, is_terminated
+            d_match = message_date(text, None)
+            if d_match and any(w in text_lower for w in ("expected on", "scheduled for", "credit date", "payroll date", "resumes on", "salary is")):
+                new_salary_day = d_match.day
+
+    return new_salary, is_terminated, new_salary_day
 
 
 def build_flows(
@@ -220,7 +204,7 @@ def build_flows(
                 projected_items.append((d, e["home_amount"], e["event_id"]))
 
     # 2. Confirmed & recurring salary projection
-    sal_msg_override, is_terminated = message_salary_info(messages or [], profile["home_currency"], rates, start)
+    sal_msg_override, is_terminated, sal_day_override = message_salary_info(messages or [], profile["home_currency"], rates, start)
     all_salaries = [
         e for e in events
         if e["direction"] == "credit" and (
@@ -240,13 +224,15 @@ def build_flows(
         elif sched_sal:
             base_sal_amt = sched_sal[0]["home_amount"]
         else:
-            reg_sal = [e for e in past_sal if not any(w in e.get("description", "").lower() for w in ("prorated", "arrears", "bonus", "advance"))]
+            reg_sal = [e for e in past_sal if not any(w in e.get("description", "").lower() for w in ("prorated", "arrears", "bonus", "advance", "commission"))]
             base_sal_amt = reg_sal[-1]["home_amount"] if reg_sal else past_sal[-1]["home_amount"]
 
-        reg_sal = [e for e in past_sal if not any(w in e.get("description", "").lower() for w in ("prorated", "arrears", "bonus", "advance"))]
+        reg_sal = [e for e in past_sal if not any(w in e.get("description", "").lower() for w in ("prorated", "arrears", "bonus", "advance", "commission"))]
         days = [e["cash_date"].day for e in (reg_sal or past_sal)]
         if sched_sal:
             sal_day = sched_sal[0]["cash_date"].day
+        elif sal_day_override is not None:
+            sal_day = sal_day_override
         elif days:
             sal_day = Counter(days).most_common(1)[0][0]
         else:
@@ -472,21 +458,6 @@ def find_spending_candidates(profile: dict, events: list[dict], requested: Decim
 
 
 def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, messages: list[dict] | None = None, data_options: list[dict] | None = None, image_amounts: dict[str, Decimal] | None = None) -> dict[str, str]:
-    rid = request.get("request_id", "")
-    if not SAMPLE_CACHE:
-        _init_sample_cache()
-    if rid in SAMPLE_CACHE:
-        return {
-            "request_id": rid,
-            "amount_safe_to_pay": SAMPLE_CACHE[rid]["amount_safe_to_pay"],
-            "affordability_status": SAMPLE_CACHE[rid]["affordability_status"],
-            "recommended_payment_method": SAMPLE_CACHE[rid]["recommended_payment_method"],
-            "payment_plan": SAMPLE_CACHE[rid]["payment_plan"],
-            "earliest_date_for_full_payment": SAMPLE_CACHE[rid]["earliest_date_for_full_payment"],
-            "spending_changes_needed": SAMPLE_CACHE[rid]["spending_changes_needed"],
-            "decision_explanation": SAMPLE_CACHE[rid]["decision_explanation"],
-        }
-
     home = profile["home_currency"]
     start = parse_date(request["request_date"])
     deadline = parse_date(request["desired_completion_date"])
@@ -495,10 +466,7 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 
     events = normalize_events(all_events, home, rates, image_amounts or BLANK_AMOUNTS)
     balance, flows, relevant, projected_items = build_flows(request, profile, events, rates, messages)
-    _, safe_amount_flows, _, _ = build_flows(
-        request, profile, events, rates, messages, recurrence_estimator="minimum"
-    )
-    safe = safe_amount(balance, safe_amount_flows, start, amount, minimum)
+    safe = safe_amount(balance, flows, start, amount, minimum)
 
     # Earliest safe date for single full payment
     earliest = ""
@@ -639,7 +607,6 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
 
 
 def run(dataset_dir: Path, output_path: Path) -> None:
-    _init_sample_cache(dataset_dir)
     data = load_dataset(dataset_dir)
     rates = data["rates_by_date_pair"]
     image_amounts = resolve_image_amounts(data["images"], dataset_dir / "media" / "images")
