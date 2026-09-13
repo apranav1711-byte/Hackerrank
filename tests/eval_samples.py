@@ -87,8 +87,41 @@ def evaluate_samples(dataset_dir: Path, trace_output: Path | None = None):
                     ),
                 })
 
+    strategic_fields = [
+        "affordability_status",
+        "recommended_payment_method",
+        "payment_plan",
+        "earliest_date_for_full_payment",
+        "spending_changes_needed",
+    ]
+    strategic_matches = 0
+    safe_within_5pct = 0
+    safe_within_15pct = 0
+
+    for s in samples:
+        u_id = s["user_id"]
+        pred = decide(s, profiles.get(u_id, {}), events_by_user.get(u_id, []), rates, messages.get(u_id, []), data["request_payment_options"], image_amounts)
+        if all(str(pred[k]).strip() == s[k].strip() for k in strategic_fields):
+            strategic_matches += 1
+        try:
+            from decimal import Decimal
+            gt_s = Decimal(s["amount_safe_to_pay"])
+            pr_s = Decimal(str(pred["amount_safe_to_pay"]))
+            denom = max(gt_s, pr_s, Decimal("1"))
+            err = abs(gt_s - pr_s) / denom
+            if err <= Decimal("0.05"):
+                safe_within_5pct += 1
+            if err <= Decimal("0.15"):
+                safe_within_15pct += 1
+        except Exception:
+            pass
+
     print(f"Exact match on ALL 6 key fields: {exact_matches}/{len(samples)}")
-    for k in fields:
+    print(f"Strategic match (all 5 core decision fields): {strategic_matches}/{len(samples)} ({strategic_matches/len(samples)*100:.1f}%)")
+    print(f"  amount_safe_to_pay exact: {matches['amount_safe_to_pay']}/{len(samples)} ({matches['amount_safe_to_pay']/len(samples)*100:.1f}%)")
+    print(f"  amount_safe_to_pay within 5% error: {safe_within_5pct}/{len(samples)} ({safe_within_5pct/len(samples)*100:.1f}%)")
+    print(f"  amount_safe_to_pay within 15% error: {safe_within_15pct}/{len(samples)} ({safe_within_15pct/len(samples)*100:.1f}%)")
+    for k in strategic_fields:
         print(f"  {k}: {matches[k]}/{len(samples)} ({matches[k]/len(samples)*100:.1f}%)")
 
     print(f"\nMismatched requests count: {len(mismatches)}")

@@ -159,6 +159,9 @@ def message_salary_info(messages: list[dict], home: str, rates: dict, request_da
             new_salary = None
             continue
 
+        if any(w in text_lower for w in ("belum disetujui", "pending approval")) and not any(w in text_lower for w in ("naik", "increased", "berlaku mulai", "effective")):
+            continue
+
         if any(x in text_lower for x in ("salary", "gaji", "payroll", "monthly pay")):
             amounts = re.findall(r"\b(INR|IDR|ZAR|USD|EUR)\s*([0-9][0-9,]*(?:\.[0-9]+)?)", text, flags=re.I)
             if amounts:
@@ -315,6 +318,8 @@ def build_flows(
             amt = amts[0]
         elif recurrence_estimator == "mean":
             amt = sum(amts, ZERO) / Decimal(len(amts))
+        elif recurrence_estimator == "latest":
+            amt = items[-1]["home_amount"]
         else:
             amt = amts[len(amts) // 2]
         source_event_id = items[-1]["event_id"]
@@ -452,6 +457,7 @@ def find_spending_candidates(profile: dict, events: list[dict], requested: Decim
                 possible_actions.append(("reduce", eid, new_val, savings, f"reduce_to:{eid}:{money(new_val)}"))
 
     possible_actions.sort(key=lambda x: x[3], reverse=True)
+    tol = minimum * Decimal("0.01")
 
     for r in [1, 2, 3]:
         for comb in itertools.combinations(possible_actions, r):
@@ -460,7 +466,7 @@ def find_spending_candidates(profile: dict, events: list[dict], requested: Decim
                 continue
             adjustments = {act[1]: act[2] for act in comb}
             labels = [act[4] for act in comb]
-            if simulate(balance, flows, start, [(start, requested)], minimum, adjustments, projected_items, deadline):
+            if simulate(balance, flows, start, [(start, requested)], minimum - tol, adjustments, projected_items, deadline):
                 return adjustments, labels
 
     return None, []
