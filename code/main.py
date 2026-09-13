@@ -491,6 +491,9 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
             earliest = d
             break
 
+    if earliest == start:
+        safe = amount
+
     methods = parse_methods(profile)
     max_months = int(profile["max_installment_months"]) if profile.get("max_installment_months") else None
     candidates = []
