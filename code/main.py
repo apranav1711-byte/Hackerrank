@@ -516,7 +516,8 @@ def decide(request: dict, profile: dict, all_events: list[dict], rates: dict, me
     earliest = ""
     for i in range(HORIZON + 1):
         d = start + timedelta(days=i)
-        if simulate(balance, flows, start, [(d, amount)], minimum, end_date=max(d, deadline)):
+        check_end = deadline if d <= deadline else min(start + timedelta(days=HORIZON), d + timedelta(days=30))
+        if simulate(balance, flows, start, [(d, amount)], minimum, end_date=check_end):
             earliest = d
             break
 
